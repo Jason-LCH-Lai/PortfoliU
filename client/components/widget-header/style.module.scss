@@ -1,0 +1,9 @@
+.container {
+  background-color: var(--cds-layer);
+  display: grid;
+  grid-template-columns: auto 1fr repeat(4, auto);
+  grid-gap: 1px;
+  padding: 0 0 0 0.5rem;
+  align-items: center;
+  border-bottom: 1px solid var(--cds-border-subtle);
+}

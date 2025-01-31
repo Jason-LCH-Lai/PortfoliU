@@ -1,0 +1,78 @@
+image: node:18.14.2
+variables:
+  CI_IMG: '"${CI_REGISTRY_IMAGE}:latest"'
+  TP_URL: "${CI_PROJECT_NAMESPACE}.bham.team"
+  TP_CONTACT: "${GITLAB_USER_EMAIL}"
+
+stages: # List of stages for jobs, and their order of execution
+  - check
+  - build
+  - test
+  - package
+  - deploy
+
+eslint:
+  stage: check
+  cache:
+    key: $CI_COMMIT_REF_SLUG # Run npm ci and maintain cache for each branch
+    paths:
+      - .npm/
+    policy: pull
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+  script:
+    - npx eslint --ext .ts,.tsx client/ # Lint the client
+    - npx eslint --ext .ts server/ # Lint the server
+
+tsc:
+  stage: build
+  cache:
+    key: $CI_COMMIT_REF_SLUG # Run npm ci and maintain cache for each branch
+    paths:
+      - .npm/
+    policy: pull
+  before_script:
+    - npm ci --cache .npm --prefer-offline
+  script:
+    - npx tsc # Build the client using Vite
+    - npx vite build # and the server using esbuild
+    - node esbuild.js
+  artifacts:
+    paths:
+      - dist # Upload ./dist to artefacts
+    expire_in: 1 day
+
+docker:
+  stage: package
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  script:
+    - echo "Containerising application..."
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+    - docker build -t ${CI_REGISTRY_IMAGE}:latest -f .cd/Dockerfile .
+    - docker push ${CI_REGISTRY_IMAGE}:latest
+
+deploy-job:
+  stage: deploy
+  environment: production
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+  image: alpine:latest
+  before_script:
+    - chmod og= $SSH_KEY
+    - apk update && apk add openssh-client
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY $VM_USER@$VM "docker compose -f ~/team-project-deployment/.cd/docker-compose.yml down || true"
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY $VM_USER@$VM "docker rm -f $(docker ps -a -q) || true"
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY $VM_USER@$VM "docker volume rm $(docker volume ls -q) || true"
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY $VM_USER@$VM "rm -rf ~/team-project-deployment || true"
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY $VM_USER@$VM "docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY"
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY $VM_USER@$VM "docker pull ${CI_REGISTRY_IMAGE}:latest"
+  script:
+    - scp -o StrictHostKeyChecking=no -i $SSH_KEY -r . $VM_USER@$VM:~/team-project-deployment
+    - ssh -o StrictHostKeyChecking=no -i $SSH_KEY $VM_USER@$VM "docker compose -f ~/team-project-deployment/.cd/docker-compose.yml up -d"
